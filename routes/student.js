@@ -1,11 +1,7 @@
 const express = require('express');
 const pool = require('../db/pool');
 const { authenticate, authorize } = require('../middleware/auth');
-const { OpenAI } = require('openai');
-
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+const { GoogleGenerativeAI } = require('@google/generative-ai'); // Corrected import name
 
 const router = express.Router();
 
@@ -218,15 +214,15 @@ router.get('/chat', async (req, res) => {
   }
 });
 
-// POST /api/student/chat — send message to AI chat
-router.post('/chat', async (req, res) => {
+// POST /api/student/ai-chat — send message to AI chat
+router.post('/ai-chat', async (req, res) => {
   try {
-    const { content } = req.body;
+    const { content: message } = req.body;
 
     // Save user message
     await pool.query(
       'INSERT INTO chat_messages (student_id, role, content) VALUES ($1, $2, $3)',
-      [req.user.id, 'user', content]
+      [req.user.id, 'user', message]
     );
 
     // Get chat history for context (last 20 messages)
@@ -235,33 +231,40 @@ router.post('/chat', async (req, res) => {
       [req.user.id]
     );
 
-    const messages = [
-      { 
-        role: 'system', 
-        content: `Ты — эмпатичный виртуальный помощник платформы психологической поддержки студентов MindSpace. 
+    const systemPrompt = `Ты — эмпатичный виртуальный помощник платформы психологической поддержки студентов MindSpace.
 Твоя цель: выслушать студента, поддержать его, помочь справиться со стрессом, дать базовые советы по саморегуляции (дыхание, режим дня, заземление).
 Правила:
 1. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО ставить диагнозы, назначать медикаменты или выступать в роли квалифицированного врача.
 2. Если студент пишет о невыносимой боли, желании навредить себе, суицидальных мыслях или сильном кризисе — сразу же прояви максимальное участие и мягко, но настойчиво порекомендуй ему или ей записаться к живому психологу на нашей платформе (через "Каталог психологов").
 3. Используй форматирование Markdown для структурирования длинных списков или советов.
-4. Общайся уважительно на "вы", будь поддерживающим и кратким.` 
-      },
-      ...historyResult.rows.map(row => ({ role: row.role, content: row.content }))
-    ];
+4. Общайся уважительно на "вы", будь поддерживающим и кратким.`;
 
-    let aiResponse = '';
-    
-    if (!process.env.OPENAI_API_KEY) {
-      aiResponse = '[Отсутствует API ключ OpenAI] Это заглушка ответа. Пожалуйста, добавьте OPENAI_API_KEY в backend/.env';
-    } else {
-      const completion = await openai.chat.completions.create({
-        model: 'gpt-3.5-turbo',
-        messages: messages,
-        max_tokens: 600,
-        temperature: 0.7
-      });
-      aiResponse = completion.choices[0].message.content;
+    if (!process.env.GOOGLE_AI_API_KEY) {
+      return res.json({ reply: 'Извините, AI-помощник сейчас недоступен (не настроен ключ API).' });
     }
+
+    const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
+    const modelName = process.env.GOOGLE_AI_MODEL || 'gemini-1.5-flash'; // Changed to 1.5-flash as it's more common
+
+    const model = genAI.getGenerativeModel({ model: modelName });
+
+    // Форматируем историю для Gemini
+    // Сообщения пользователя -> 'user', Сообщения от AI -> 'model'
+    const formattedHistory = historyResult.rows.map(msg => ({
+      role: msg.role === 'user' ? 'user' : 'model',
+      parts: [{ text: msg.content }]
+    }));
+
+    const chat = model.startChat({
+      history: formattedHistory,
+      generationConfig: {
+        temperature: 0.7,
+      },
+      systemInstruction: systemPrompt,
+    });
+
+    const result = await chat.sendMessage(message);
+    const aiResponse = result.response.text();
 
     // Save AI message
     await pool.query(
@@ -269,7 +272,7 @@ router.post('/chat', async (req, res) => {
       [req.user.id, 'assistant', aiResponse]
     );
 
-    res.json({ response: aiResponse });
+    res.json({ reply: aiResponse });
   } catch (err) {
     console.error('Chat error:', err);
     res.status(500).json({ error: 'Ошибка сервера при работе с ИИ' });

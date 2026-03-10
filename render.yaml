@@ -16,5 +16,7 @@ services:
         sync: false # Set this securely in the Render dashboard!
       - key: JWT_SECRET
         sync: false # Set securely in Render DB!
-      - key: OPENAI_API_KEY
+      - key: GOOGLE_AI_API_KEY
         sync: false # Set securely in Render DB!
+      - key: GOOGLE_AI_MODEL
+        value: gemini-2.5-flash
