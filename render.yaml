@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: mindspace-backend
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: FRONTEND_URL
+        value: REPLACE_WITH_FRONTEND_URL # e.g. https://mindspace.vercel.app
+      - key: DATABASE_URL
+        sync: false # Set this securely in the Render dashboard!
+      - key: JWT_SECRET
+        sync: false # Set securely in Render DB!
+      - key: OPENAI_API_KEY
+        sync: false # Set securely in Render DB!

@@ -11,9 +11,24 @@ const adminRoutes = require('./routes/admin');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+const rateLimit = require('express-rate-limit');
+const cookieParser = require('cookie-parser');
+
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per `window` (here, per 15 minutes)
+  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
+  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+});
+
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: 'http://localhost:5173', // Frontend dev URL
+  credentials: true // Allow cookies to be sent
+}));
 app.use(express.json());
+app.use(cookieParser());
+app.use('/api', generalLimiter);
 
 // Routes
 app.use('/api/auth', authRoutes);

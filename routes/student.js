@@ -1,6 +1,11 @@
 const express = require('express');
 const pool = require('../db/pool');
 const { authenticate, authorize } = require('../middleware/auth');
+const { OpenAI } = require('openai');
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+});
 
 const router = express.Router();
 
@@ -213,7 +218,7 @@ router.get('/chat', async (req, res) => {
   }
 });
 
-// POST /api/student/chat — send message to AI chat (mock)
+// POST /api/student/chat — send message to AI chat
 router.post('/chat', async (req, res) => {
   try {
     const { content } = req.body;
@@ -224,17 +229,41 @@ router.post('/chat', async (req, res) => {
       [req.user.id, 'user', content]
     );
 
-    // Generate AI response (mock)
-    const responses = [
-      'Я понимаю, что вам сейчас непросто. Давайте поговорим об этом подробнее. Что именно вызывает у вас наибольшее беспокойство?',
-      'Спасибо, что поделились. Попробуйте технику дыхания: вдох на 4 счёта, задержка на 4 счёта, выдох на 6 счётов. Повторите 5 раз.',
-      'Это нормальная реакция на стресс. Важно помнить, что вы не одиноки. Хотите, я подскажу несколько техник релаксации?',
-      'Похоже, вам может помочь консультация с психологом. Хотите, я помогу записаться на приём?',
-      'Старайтесь делать перерывы каждые 45 минут учёбы. Физическая активность, даже короткая прогулка, может значительно улучшить настроение.',
-      'Важно поддерживать режим сна. Попробуйте не использовать телефон за час до сна и ложиться в одно и то же время.',
-    ];
-    const aiResponse = responses[Math.floor(Math.random() * responses.length)];
+    // Get chat history for context (last 20 messages)
+    const historyResult = await pool.query(
+      'SELECT role, content FROM chat_messages WHERE student_id = $1 ORDER BY created_at ASC LIMIT 20',
+      [req.user.id]
+    );
 
+    const messages = [
+      { 
+        role: 'system', 
+        content: `Ты — эмпатичный виртуальный помощник платформы психологической поддержки студентов MindSpace. 
+Твоя цель: выслушать студента, поддержать его, помочь справиться со стрессом, дать базовые советы по саморегуляции (дыхание, режим дня, заземление).
+Правила:
+1. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО ставить диагнозы, назначать медикаменты или выступать в роли квалифицированного врача.
+2. Если студент пишет о невыносимой боли, желании навредить себе, суицидальных мыслях или сильном кризисе — сразу же прояви максимальное участие и мягко, но настойчиво порекомендуй ему или ей записаться к живому психологу на нашей платформе (через "Каталог психологов").
+3. Используй форматирование Markdown для структурирования длинных списков или советов.
+4. Общайся уважительно на "вы", будь поддерживающим и кратким.` 
+      },
+      ...historyResult.rows.map(row => ({ role: row.role, content: row.content }))
+    ];
+
+    let aiResponse = '';
+    
+    if (!process.env.OPENAI_API_KEY) {
+      aiResponse = '[Отсутствует API ключ OpenAI] Это заглушка ответа. Пожалуйста, добавьте OPENAI_API_KEY в backend/.env';
+    } else {
+      const completion = await openai.chat.completions.create({
+        model: 'gpt-3.5-turbo',
+        messages: messages,
+        max_tokens: 600,
+        temperature: 0.7
+      });
+      aiResponse = completion.choices[0].message.content;
+    }
+
+    // Save AI message
     await pool.query(
       'INSERT INTO chat_messages (student_id, role, content) VALUES ($1, $2, $3)',
       [req.user.id, 'assistant', aiResponse]
@@ -243,7 +272,7 @@ router.post('/chat', async (req, res) => {
     res.json({ response: aiResponse });
   } catch (err) {
     console.error('Chat error:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    res.status(500).json({ error: 'Ошибка сервера при работе с ИИ' });
   }
 });
 
