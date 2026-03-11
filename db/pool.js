@@ -3,8 +3,14 @@ require('dotenv').config();
 
 const isProduction = process.env.NODE_ENV === 'production';
 
+let connectionString = process.env.DATABASE_URL;
+// Remove any query params like ?sslmode=require that might override our explicit ssl config
+if (connectionString && connectionString.includes('?')) {
+  connectionString = connectionString.split('?')[0];
+}
+
 const poolConfig = {
-  connectionString: process.env.DATABASE_URL,
+  connectionString: connectionString,
 };
 
 // Logging connection source for debugging (safe)
@@ -15,7 +21,7 @@ if (process.env.DATABASE_URL) {
   console.log(`🔌 Connecting to database via individual components`);
 }
 
-// Ensure SSL is explicitly configured for external connections (like Render to AWS RDS)
+// Ensure SSL is explicitly configured for external connections
 if (process.env.NODE_ENV === 'production' || 
    (process.env.DATABASE_URL && !process.env.DATABASE_URL.includes('localhost'))) {
   poolConfig.ssl = { rejectUnauthorized: false };
