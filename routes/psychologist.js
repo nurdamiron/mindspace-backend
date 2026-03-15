@@ -1,10 +1,41 @@
 const express = require('express');
 const pool = require('../db/pool');
 const { authenticate, authorize } = require('../middleware/auth');
+const { aiLimiter } = require('../middleware/rateLimits');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const router = express.Router();
 
 router.use(authenticate, authorize('psychologist'));
+
+// GET /api/psychologist/profile — get own profile
+router.get('/profile', async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT id, name, email, specialization, languages, experience_years, bio FROM users WHERE id = $1',
+      [req.user.id]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// PATCH /api/psychologist/profile — update own profile
+router.patch('/profile', async (req, res) => {
+  try {
+    const { name, specialization, languages, experience_years, bio } = req.body;
+    const result = await pool.query(
+      `UPDATE users SET name = COALESCE($1, name), specialization = $2,
+       languages = $3, experience_years = $4, bio = $5
+       WHERE id = $6 RETURNING id, name, email, specialization, languages, experience_years, bio`,
+      [name || null, specialization || null, languages || null, experience_years || null, bio || null, req.user.id]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
 
 // GET /api/psychologist/schedule — today's and future schedule
 router.get('/schedule', async (req, res) => {
@@ -174,6 +205,87 @@ router.get('/stats', async (req, res) => {
   } catch (err) {
     console.error('Stats error:', err);
     res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// POST /api/psychologist/students/:id/ai-summary — AI pre-session briefing
+router.post('/students/:id/ai-summary', aiLimiter, async (req, res) => {
+  try {
+    const access = await pool.query(
+      'SELECT id FROM appointments WHERE student_id = $1 AND psychologist_id = $2 LIMIT 1',
+      [req.params.id, req.user.id]
+    );
+    if (access.rows.length === 0) {
+      return res.status(403).json({ error: 'Нет доступа к данным студента' });
+    }
+
+    if (!process.env.GOOGLE_AI_API_KEY) {
+      return res.status(503).json({ error: 'AI-сервис недоступен' });
+    }
+
+    const [checkIns, appointments, surveys] = await Promise.all([
+      pool.query(
+        `SELECT date, mood, stress, sleep, energy, productivity
+         FROM check_ins WHERE student_id = $1
+         ORDER BY date DESC LIMIT 14`,
+        [req.params.id]
+      ),
+      pool.query(
+        `SELECT a.status, ts.date, sn.condition_before, sn.condition_after,
+                sn.tags, sn.notes as session_notes, sn.recommend_followup
+         FROM appointments a
+         JOIN time_slots ts ON a.slot_id = ts.id
+         LEFT JOIN session_notes sn ON sn.appointment_id = a.id
+         WHERE a.student_id = $1 AND a.psychologist_id = $2
+         ORDER BY ts.date DESC LIMIT 5`,
+        [req.params.id, req.user.id]
+      ),
+      pool.query(
+        `SELECT score, risk_level, created_at FROM surveys
+         WHERE student_id = $1 ORDER BY created_at DESC LIMIT 3`,
+        [req.params.id]
+      ),
+    ]);
+
+    const avgStress = checkIns.rows.length
+      ? (checkIns.rows.reduce((s, r) => s + r.stress, 0) / checkIns.rows.length).toFixed(1)
+      : null;
+    const avgMood = checkIns.rows.length
+      ? (checkIns.rows.reduce((s, r) => s + r.mood, 0) / checkIns.rows.length).toFixed(1)
+      : null;
+
+    const completedWithNotes = appointments.rows.filter(a => a.session_notes);
+
+    const prompt = `Ты — аналитический AI-ассистент для практикующего психолога.
+Составь краткую предсессионную сводку по студенту на основе объективных данных.
+
+ДАННЫЕ ЧЕК-ИНОВ (последние 14 дней, шкала 1–5):
+${JSON.stringify(checkIns.rows.map(r => ({ дата: r.date, настроение: r.mood, стресс: r.stress, сон: r.sleep, энергия: r.energy, продуктивность: r.productivity })), null, 2)}
+Средний стресс: ${avgStress ?? 'нет данных'}, среднее настроение: ${avgMood ?? 'нет данных'}.
+
+ИСТОРИЯ СЕССИЙ С ЭТИМ ПСИХОЛОГОМ (${appointments.rows.length} сессий):
+${JSON.stringify(completedWithNotes.map(a => ({ дата: a.date, до: a.condition_before, после: a.condition_after, теги: a.tags, заметки: a.session_notes, повтор: a.recommend_followup })), null, 2)}
+
+СКРИНИНГИ (последние 3):
+${JSON.stringify(surveys.rows.map(s => ({ балл: s.score + '/25', риск: s.risk_level, дата: s.created_at })), null, 2)}
+
+Напиши сводку в формате Markdown, строго по структуре:
+**Общее состояние** — 2 предложения, что сейчас происходит с динамикой.
+**Тенденции** — что улучшается, что ухудшается.
+**На что обратить внимание** — 2-3 конкретных момента для сессии.
+**Рекомендуемые темы** — что стоит обсудить.
+
+Тон: профессиональный, клинически нейтральный. Без диагнозов. Кратко.`;
+
+    const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
+    const model = genAI.getGenerativeModel({ model: process.env.GOOGLE_AI_MODEL || 'gemini-1.5-flash' });
+    const result = await model.generateContent(prompt);
+    const summary = result.response.text();
+
+    res.json({ summary });
+  } catch (err) {
+    console.error('AI Summary error:', err);
+    res.status(500).json({ error: 'Ошибка AI-анализа' });
   }
 });
 

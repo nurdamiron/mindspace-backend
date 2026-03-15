@@ -177,4 +177,129 @@ router.post('/slots', async (req, res) => {
   }
 });
 
+// DELETE /api/admin/slots/:id — remove a time slot
+router.delete('/slots/:id', async (req, res) => {
+  try {
+    const slot = await pool.query('SELECT id, is_available FROM time_slots WHERE id = $1', [req.params.id]);
+    if (slot.rows.length === 0) return res.status(404).json({ error: 'Слот не найден' });
+    if (!slot.rows[0].is_available) {
+      return res.status(400).json({ error: 'Нельзя удалить занятый слот' });
+    }
+    await pool.query('DELETE FROM time_slots WHERE id = $1', [req.params.id]);
+    res.json({ message: 'Слот удалён' });
+  } catch (err) {
+    console.error('Delete slot error:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// GET /api/admin/students/:id — single student full data
+router.get('/students/:id', async (req, res) => {
+  try {
+    const student = await pool.query(
+      'SELECT id, name, email, faculty, course, gender, age, created_at FROM users WHERE id = $1 AND role = $2',
+      [req.params.id, 'student']
+    );
+    if (student.rows.length === 0) return res.status(404).json({ error: 'Студент не найден' });
+
+    const [checkIns, appointments, surveys] = await Promise.all([
+      pool.query(
+        `SELECT date, mood, stress, sleep, energy, productivity FROM check_ins
+         WHERE student_id = $1 AND date >= CURRENT_DATE - 30 ORDER BY date ASC`,
+        [req.params.id]
+      ),
+      pool.query(
+        `SELECT a.id, a.status, a.reason, a.format, ts.date, ts.start_time, ts.end_time,
+                u.name as psychologist_name,
+                sn.condition_before, sn.condition_after, sn.tags, sn.notes as session_notes, sn.recommend_followup
+         FROM appointments a
+         JOIN time_slots ts ON a.slot_id = ts.id
+         JOIN users u ON a.psychologist_id = u.id
+         LEFT JOIN session_notes sn ON sn.appointment_id = a.id
+         WHERE a.student_id = $1 ORDER BY ts.date DESC`,
+        [req.params.id]
+      ),
+      pool.query(
+        'SELECT score, risk_level, created_at FROM surveys WHERE student_id = $1 ORDER BY created_at DESC LIMIT 5',
+        [req.params.id]
+      ),
+    ]);
+
+    res.json({ student: student.rows[0], checkIns: checkIns.rows, appointments: appointments.rows, surveys: surveys.rows });
+  } catch (err) {
+    console.error('Admin student detail error:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// GET /api/admin/students — list all students with stats
+router.get('/students', async (req, res) => {
+  try {
+    const { search = '', faculty = '', risk = '', page = 1, limit = 25 } = req.query;
+    const offset = (Number(page) - 1) * Number(limit);
+
+    const result = await pool.query(
+      `SELECT
+         u.id, u.name, u.email, u.faculty, u.course, u.gender, u.age, u.created_at,
+         COALESCE(ci.last_checkin, NULL) as last_checkin,
+         COALESCE(ci.checkin_count, 0) as checkin_count,
+         COALESCE(ci.avg_stress, 0) as avg_stress,
+         COALESCE(ci.avg_mood, 0) as avg_mood,
+         sv.risk_level as last_risk,
+         sv.score as last_score,
+         COALESCE(ap.session_count, 0) as session_count
+       FROM users u
+       LEFT JOIN LATERAL (
+         SELECT
+           MAX(date) as last_checkin,
+           COUNT(*) as checkin_count,
+           ROUND(AVG(stress)::numeric, 1) as avg_stress,
+           ROUND(AVG(mood)::numeric, 1) as avg_mood
+         FROM check_ins WHERE student_id = u.id AND date >= CURRENT_DATE - 30
+       ) ci ON true
+       LEFT JOIN LATERAL (
+         SELECT risk_level, score FROM surveys
+         WHERE student_id = u.id ORDER BY created_at DESC LIMIT 1
+       ) sv ON true
+       LEFT JOIN LATERAL (
+         SELECT COUNT(*) as session_count FROM appointments WHERE student_id = u.id
+       ) ap ON true
+       WHERE u.role = 'student'
+         AND ($1 = '' OR u.name ILIKE '%' || $1 || '%' OR u.email ILIKE '%' || $1 || '%')
+         AND ($2 = '' OR u.faculty = $2)
+         AND ($3 = '' OR sv.risk_level = $3)
+       ORDER BY ci.last_checkin DESC NULLS LAST, u.created_at DESC
+       LIMIT $4 OFFSET $5`,
+      [search, faculty, risk, Number(limit), offset]
+    );
+
+    const countResult = await pool.query(
+      `SELECT COUNT(*) FROM users u
+       LEFT JOIN LATERAL (
+         SELECT risk_level FROM surveys WHERE student_id = u.id ORDER BY created_at DESC LIMIT 1
+       ) sv ON true
+       WHERE u.role = 'student'
+         AND ($1 = '' OR u.name ILIKE '%' || $1 || '%' OR u.email ILIKE '%' || $1 || '%')
+         AND ($2 = '' OR u.faculty = $2)
+         AND ($3 = '' OR sv.risk_level = $3)`,
+      [search, faculty, risk]
+    );
+
+    const faculties = await pool.query(
+      `SELECT DISTINCT faculty FROM users WHERE role = 'student' AND faculty IS NOT NULL ORDER BY faculty`
+    );
+
+    res.json({
+      students: result.rows,
+      faculties: faculties.rows.map(r => r.faculty),
+      total: Number(countResult.rows[0].count),
+      page: Number(page),
+      limit: Number(limit),
+    });
+  } catch (err) {
+    console.error('Admin students error:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
 module.exports = router;

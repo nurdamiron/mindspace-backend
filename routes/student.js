@@ -1,7 +1,8 @@
 const express = require('express');
 const pool = require('../db/pool');
 const { authenticate, authorize } = require('../middleware/auth');
-const { GoogleGenerativeAI } = require('@google/generative-ai'); // Corrected import name
+const { aiLimiter } = require('../middleware/rateLimits');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const router = express.Router();
 
@@ -182,6 +183,28 @@ router.post('/surveys', async (req, res) => {
   }
 });
 
+// PATCH /api/student/appointments/:id/cancel — cancel appointment
+router.patch('/appointments/:id/cancel', async (req, res) => {
+  try {
+    const appt = await pool.query(
+      `SELECT a.id, a.slot_id, a.status FROM appointments a
+       WHERE a.id = $1 AND a.student_id = $2`,
+      [req.params.id, req.user.id]
+    );
+    if (appt.rows.length === 0) return res.status(404).json({ error: 'Запись не найдена' });
+    if (appt.rows[0].status !== 'scheduled') {
+      return res.status(400).json({ error: 'Можно отменить только запланированные записи' });
+    }
+
+    await pool.query('UPDATE appointments SET status = $1 WHERE id = $2', ['cancelled', req.params.id]);
+    await pool.query('UPDATE time_slots SET is_available = true WHERE id = $1', [appt.rows[0].slot_id]);
+    res.json({ message: 'Запись отменена' });
+  } catch (err) {
+    console.error('Cancel appointment error:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
 // POST /api/student/appointments/:id/feedback — appointment feedback
 router.post('/appointments/:id/feedback', async (req, res) => {
   try {
@@ -215,7 +238,7 @@ router.get('/chat', async (req, res) => {
 });
 
 // POST /api/student/ai-chat — send message to AI chat
-router.post('/ai-chat', async (req, res) => {
+router.post('/ai-chat', aiLimiter, async (req, res) => {
   try {
     const { content: message } = req.body;
 
@@ -276,6 +299,98 @@ router.post('/ai-chat', async (req, res) => {
   } catch (err) {
     console.error('Chat error:', err);
     res.status(500).json({ error: 'Ошибка сервера при работе с ИИ' });
+  }
+});
+
+// GET /api/student/profile — get own profile
+router.get('/profile', async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT id, name, email, faculty, course, gender, age FROM users WHERE id = $1',
+      [req.user.id]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// PATCH /api/student/profile — update own profile
+router.patch('/profile', async (req, res) => {
+  try {
+    const { name, faculty, course, gender, age } = req.body;
+    const result = await pool.query(
+      `UPDATE users SET name = COALESCE($1, name), faculty = $2, course = $3, gender = $4, age = $5
+       WHERE id = $6 RETURNING id, name, email, faculty, course, gender, age`,
+      [name || null, faculty || null, course || null, gender || null, age || null, req.user.id]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// POST /api/student/ai-insight — personalized AI analysis of check-in trends
+router.post('/ai-insight', aiLimiter, async (req, res) => {
+  try {
+    if (!process.env.GOOGLE_AI_API_KEY) {
+      return res.status(503).json({ error: 'AI-сервис недоступен' });
+    }
+
+    const checkIns = await pool.query(
+      `SELECT date, mood, stress, sleep, energy, productivity
+       FROM check_ins WHERE student_id = $1
+       ORDER BY date DESC LIMIT 7`,
+      [req.user.id]
+    );
+
+    if (checkIns.rows.length === 0) {
+      return res.status(400).json({ error: 'Недостаточно данных. Заполните хотя бы один чек-ин.' });
+    }
+
+    const lastSurvey = await pool.query(
+      `SELECT score, risk_level FROM surveys
+       WHERE student_id = $1 ORDER BY created_at DESC LIMIT 1`,
+      [req.user.id]
+    );
+
+    const rows = checkIns.rows.map(r => ({
+      дата: r.date,
+      настроение: r.mood,
+      стресс: r.stress,
+      сон: r.sleep,
+      энергия: r.energy,
+      продуктивность: r.productivity,
+    }));
+
+    const surveyInfo = lastSurvey.rows[0]
+      ? `Последний скрининг: балл ${lastSurvey.rows[0].score}/25, риск: ${lastSurvey.rows[0].risk_level}.`
+      : '';
+
+    const prompt = `Ты — психологический AI-аналитик платформы MindSpace для студентов.
+Проанализируй данные ежедневных чек-инов студента (шкала 1–5) за последние дни.
+${surveyInfo}
+
+Данные чек-инов (от новых к старым):
+${JSON.stringify(rows, null, 2)}
+
+Напиши персональный инсайт в 3 частях (используй Markdown):
+**Что происходит** — 2 предложения о текущем состоянии на основе данных.
+**Тенденция** — растёт, падает или стабильно? 1-2 предложения.
+**3 конкретных совета** — практические, применимые сегодня.
+
+Тон: поддерживающий, без диагнозов. Обращение на "вы". Кратко.`;
+
+    const { GoogleGenerativeAI } = require('@google/generative-ai');
+    const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
+    const model = genAI.getGenerativeModel({ model: process.env.GOOGLE_AI_MODEL || 'gemini-1.5-flash' });
+    const result = await model.generateContent(prompt);
+    const insight = result.response.text();
+
+    res.json({ insight });
+  } catch (err) {
+    console.error('AI Insight error:', err);
+    res.status(500).json({ error: 'Ошибка AI-анализа' });
   }
 });
 
