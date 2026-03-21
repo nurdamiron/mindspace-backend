@@ -2,7 +2,7 @@ const express = require('express');
 const pool = require('../db/pool');
 const { authenticate, authorize } = require('../middleware/auth');
 const { aiLimiter } = require('../middleware/rateLimits');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { OpenAI } = require('openai');
 
 const router = express.Router();
 
@@ -242,16 +242,16 @@ router.post('/ai-chat', aiLimiter, async (req, res) => {
   try {
     const { content: message } = req.body;
 
+    // Get chat history BEFORE saving current message to avoid duplication
+    const historyResult = await pool.query(
+      'SELECT role, content FROM chat_messages WHERE student_id = $1 ORDER BY created_at ASC LIMIT 20',
+      [req.user.id]
+    );
+
     // Save user message
     await pool.query(
       'INSERT INTO chat_messages (student_id, role, content) VALUES ($1, $2, $3)',
       [req.user.id, 'user', message]
-    );
-
-    // Get chat history for context (last 20 messages)
-    const historyResult = await pool.query(
-      'SELECT role, content FROM chat_messages WHERE student_id = $1 ORDER BY created_at ASC LIMIT 20',
-      [req.user.id]
     );
 
     const systemPrompt = `Ты — эмпатичный виртуальный помощник платформы психологической поддержки студентов MindSpace.
@@ -262,32 +262,31 @@ router.post('/ai-chat', aiLimiter, async (req, res) => {
 3. Используй форматирование Markdown для структурирования длинных списков или советов.
 4. Общайся уважительно на "вы", будь поддерживающим и кратким.`;
 
-    if (!process.env.GOOGLE_AI_API_KEY) {
+    if (!process.env.PERPLEXITY_API_KEY) {
       return res.json({ reply: 'Извините, AI-помощник сейчас недоступен (не настроен ключ API).' });
     }
 
-    const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
-    const modelName = process.env.GOOGLE_AI_MODEL || 'gemini-1.5-flash'; // Changed to 1.5-flash as it's more common
-
-    const model = genAI.getGenerativeModel({ model: modelName });
-
-    // Форматируем историю для Gemini
-    // Сообщения пользователя -> 'user', Сообщения от AI -> 'model'
-    const formattedHistory = historyResult.rows.map(msg => ({
-      role: msg.role === 'user' ? 'user' : 'model',
-      parts: [{ text: msg.content }]
-    }));
-
-    const chat = model.startChat({
-      history: formattedHistory,
-      generationConfig: {
-        temperature: 0.7,
-      },
-      systemInstruction: systemPrompt,
+    const client = new OpenAI({
+      apiKey: process.env.PERPLEXITY_API_KEY,
+      baseURL: 'https://api.perplexity.ai',
     });
 
-    const result = await chat.sendMessage(message);
-    const aiResponse = result.response.text();
+    const formattedHistory = historyResult.rows.map(msg => ({
+      role: msg.role === 'user' ? 'user' : 'assistant',
+      content: msg.content,
+    }));
+
+    const completion = await client.chat.completions.create({
+      model: process.env.PERPLEXITY_MODEL || 'sonar',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        ...formattedHistory,
+        { role: 'user', content: message },
+      ],
+      temperature: 0.7,
+    });
+
+    const aiResponse = completion.choices[0].message.content;
 
     // Save AI message
     await pool.query(
@@ -333,7 +332,7 @@ router.patch('/profile', async (req, res) => {
 // POST /api/student/ai-insight — personalized AI analysis of check-in trends
 router.post('/ai-insight', aiLimiter, async (req, res) => {
   try {
-    if (!process.env.GOOGLE_AI_API_KEY) {
+    if (!process.env.PERPLEXITY_API_KEY) {
       return res.status(503).json({ error: 'AI-сервис недоступен' });
     }
 
@@ -381,11 +380,16 @@ ${JSON.stringify(rows, null, 2)}
 
 Тон: поддерживающий, без диагнозов. Обращение на "вы". Кратко.`;
 
-    const { GoogleGenerativeAI } = require('@google/generative-ai');
-    const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: process.env.GOOGLE_AI_MODEL || 'gemini-1.5-flash' });
-    const result = await model.generateContent(prompt);
-    const insight = result.response.text();
+    const client = new OpenAI({
+      apiKey: process.env.PERPLEXITY_API_KEY,
+      baseURL: 'https://api.perplexity.ai',
+    });
+    const completion = await client.chat.completions.create({
+      model: process.env.PERPLEXITY_MODEL || 'sonar',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.7,
+    });
+    const insight = completion.choices[0].message.content;
 
     res.json({ insight });
   } catch (err) {

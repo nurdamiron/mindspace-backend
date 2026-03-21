@@ -2,7 +2,7 @@ const express = require('express');
 const pool = require('../db/pool');
 const { authenticate, authorize } = require('../middleware/auth');
 const { aiLimiter } = require('../middleware/rateLimits');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { OpenAI } = require('openai');
 
 const router = express.Router();
 
@@ -219,7 +219,7 @@ router.post('/students/:id/ai-summary', aiLimiter, async (req, res) => {
       return res.status(403).json({ error: 'Нет доступа к данным студента' });
     }
 
-    if (!process.env.GOOGLE_AI_API_KEY) {
+    if (!process.env.PERPLEXITY_API_KEY) {
       return res.status(503).json({ error: 'AI-сервис недоступен' });
     }
 
@@ -277,10 +277,16 @@ ${JSON.stringify(surveys.rows.map(s => ({ балл: s.score + '/25', риск: s
 
 Тон: профессиональный, клинически нейтральный. Без диагнозов. Кратко.`;
 
-    const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: process.env.GOOGLE_AI_MODEL || 'gemini-1.5-flash' });
-    const result = await model.generateContent(prompt);
-    const summary = result.response.text();
+    const client = new OpenAI({
+      apiKey: process.env.PERPLEXITY_API_KEY,
+      baseURL: 'https://api.perplexity.ai',
+    });
+    const completion = await client.chat.completions.create({
+      model: process.env.PERPLEXITY_MODEL || 'sonar',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.7,
+    });
+    const summary = completion.choices[0].message.content;
 
     res.json({ summary });
   } catch (err) {

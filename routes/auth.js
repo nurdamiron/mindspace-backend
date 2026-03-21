@@ -11,7 +11,7 @@ const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'mental-health-plat
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10, // Limit each IP to 10 login requests per `window`
+  max: process.env.NODE_ENV === 'test' ? 10000 : 10,
   message: { error: 'Слишком много попыток входа, попробуйте позже' }
 });
 
