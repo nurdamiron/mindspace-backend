@@ -305,7 +305,7 @@ router.post('/ai-chat', aiLimiter, async (req, res) => {
       temperature: 0.7,
     });
 
-    const aiResponse = completion.choices[0].message.content;
+    const aiResponse = completion.choices[0].message.content.replace(/\[\d+\]/g, '').replace(/\s{2,}/g, ' ').trim();
 
     // Save AI message
     await pool.query(
@@ -408,7 +408,7 @@ ${JSON.stringify(rows, null, 2)}
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.7,
     });
-    const insight = completion.choices[0].message.content;
+    const insight = completion.choices[0].message.content.replace(/\[\d+\]/g, '').replace(/\s{2,}/g, ' ').trim();
 
     res.json({ insight });
   } catch (err) {
