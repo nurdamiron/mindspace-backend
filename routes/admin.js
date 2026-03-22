@@ -1,23 +1,31 @@
+// express — маршрутизатор жасау үшін
 const express = require('express');
+// pool — дерекқор сұраныстары үшін
 const pool = require('../db/pool');
+// bcryptjs — жаңа психолог құпия сөзін хэштеу үшін
 const bcrypt = require('bcryptjs');
+// authenticate, authorize — токен тексеру және рөл шектеу middleware
 const { authenticate, authorize } = require('../middleware/auth');
 
 const router = express.Router();
 
+// Барлық маршруттар тек әкімші рөліне ғана қол жетімді
 router.use(authenticate, authorize('admin'));
 
-// GET /api/admin/dashboard — aggregate statistics
+// GET /api/admin/dashboard — жалпы статистика
 router.get('/dashboard', async (req, res) => {
   try {
+    // Студенттер жалпы саны
     const totalStudents = await pool.query(
       "SELECT COUNT(*) as count FROM users WHERE role = 'student'"
     );
 
+    // Соңғы 7 күнде белсенді студенттер (check-in жасағандар)
     const activeStudents = await pool.query(
       `SELECT COUNT(DISTINCT student_id) as count FROM check_ins WHERE date >= CURRENT_DATE - 7`
     );
 
+    // Сеанстар жалпы, аяқталған және жоспарланған санауышы
     const totalSessions = await pool.query(
       `SELECT COUNT(*) as total,
               COUNT(*) FILTER (WHERE status = 'completed') as completed,
@@ -25,6 +33,7 @@ router.get('/dashboard', async (req, res) => {
        FROM appointments`
     );
 
+    // Соңғы 30 күндегі апталық сеанс тренді
     const weeklyTrend = await pool.query(
       `SELECT ts.date, COUNT(*) as count
        FROM appointments a JOIN time_slots ts ON a.slot_id = ts.id
@@ -32,6 +41,7 @@ router.get('/dashboard', async (req, res) => {
        GROUP BY ts.date ORDER BY ts.date`
     );
 
+    // Факультет бойынша студент және сеанс статистикасы
     const facultyStats = await pool.query(
       `SELECT u.faculty, COUNT(DISTINCT a.student_id) as students, COUNT(a.id) as sessions
        FROM appointments a
@@ -40,11 +50,13 @@ router.get('/dashboard', async (req, res) => {
        GROUP BY u.faculty ORDER BY sessions DESC`
     );
 
+    // Жоғары стресс деңгейі бар студенттер (7 күнде stress >= 4)
     const highStressStudents = await pool.query(
       `SELECT COUNT(DISTINCT student_id) as count FROM check_ins
        WHERE date >= CURRENT_DATE - 7 AND stress >= 4`
     );
 
+    // Соңғы 7 күндегі орташа метрикалар
     const avgMetrics = await pool.query(
       `SELECT
         ROUND(AVG(mood)::numeric, 1) as avg_mood,
@@ -55,6 +67,7 @@ router.get('/dashboard', async (req, res) => {
        FROM check_ins WHERE date >= CURRENT_DATE - 7`
     );
 
+    // Факультет бойынша қауіп деңгейі
     const riskByFaculty = await pool.query(
       `SELECT u.faculty,
               ROUND(AVG(c.stress)::numeric, 1) as avg_stress,
@@ -77,12 +90,12 @@ router.get('/dashboard', async (req, res) => {
       riskByFaculty: riskByFaculty.rows,
     });
   } catch (err) {
-    console.error('Dashboard error:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    console.error('Дашборд қатесі:', err);
+    res.status(500).json({ error: 'Сервер қатесі' });
   }
 });
 
-// GET /api/admin/psychologists — list psychologists
+// GET /api/admin/psychologists — психологтар тізімі (статистикамен)
 router.get('/psychologists', async (req, res) => {
   try {
     const result = await pool.query(
@@ -96,15 +109,16 @@ router.get('/psychologists', async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
-    console.error('Admin psychologists error:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    console.error('Психологтар тізімі қатесі:', err);
+    res.status(500).json({ error: 'Сервер қатесі' });
   }
 });
 
-// POST /api/admin/psychologists — add a psychologist
+// POST /api/admin/psychologists — жаңа психолог қосу
 router.post('/psychologists', async (req, res) => {
   try {
     const { email, password, name, specialization, languages, experience_years, bio } = req.body;
+    // Берілмесе әдепкі құпия сөз қолданылады
     const hash = await bcrypt.hash(password || 'password123', 10);
 
     const result = await pool.query(
@@ -114,15 +128,16 @@ router.post('/psychologists', async (req, res) => {
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
+    // Email қайталануы
     if (err.code === '23505') {
-      return res.status(400).json({ error: 'Email уже используется' });
+      return res.status(400).json({ error: 'Бұл email бұрын пайдаланылуда' });
     }
-    console.error('Add psychologist error:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    console.error('Психолог қосу қатесі:', err);
+    res.status(500).json({ error: 'Сервер қатесі' });
   }
 });
 
-// DELETE /api/admin/psychologists/:id — remove a psychologist
+// DELETE /api/admin/psychologists/:id — психологты жою
 router.delete('/psychologists/:id', async (req, res) => {
   try {
     const result = await pool.query(
@@ -130,16 +145,16 @@ router.delete('/psychologists/:id', async (req, res) => {
       [req.params.id]
     );
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Психолог не найден' });
+      return res.status(404).json({ error: 'Психолог табылмады' });
     }
-    res.json({ message: 'Психолог удалён' });
+    res.json({ message: 'Психолог жойылды' });
   } catch (err) {
-    console.error('Delete psychologist error:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    console.error('Психологты жою қатесі:', err);
+    res.status(500).json({ error: 'Сервер қатесі' });
   }
 });
 
-// GET /api/admin/slots — all slots
+// GET /api/admin/slots — барлық болашақ слоттар (психолог атымен)
 router.get('/slots', async (req, res) => {
   try {
     const result = await pool.query(
@@ -151,16 +166,16 @@ router.get('/slots', async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
-    console.error('Admin slots error:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    console.error('Слоттар алу қатесі:', err);
+    res.status(500).json({ error: 'Сервер қатесі' });
   }
 });
 
-// POST /api/admin/slots — create time slots
+// POST /api/admin/slots — психолог үшін слоттар жасау
 router.post('/slots', async (req, res) => {
   try {
     const { psychologist_id, date, slots } = req.body;
-    // slots is an array of { start_time, end_time }
+    // slots — { start_time, end_time } массиві
     const results = [];
     for (const slot of slots) {
       const result = await pool.query(
@@ -172,36 +187,39 @@ router.post('/slots', async (req, res) => {
     }
     res.status(201).json(results);
   } catch (err) {
-    console.error('Create slots error:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    console.error('Слот жасау қатесі:', err);
+    res.status(500).json({ error: 'Сервер қатесі' });
   }
 });
 
-// DELETE /api/admin/slots/:id — remove a time slot
+// DELETE /api/admin/slots/:id — слотты жою (тек бос слоттарды)
 router.delete('/slots/:id', async (req, res) => {
   try {
-    const slot = await pool.query('SELECT id, is_available FROM time_slots WHERE id = $1', [req.params.id]);
-    if (slot.rows.length === 0) return res.status(404).json({ error: 'Слот не найден' });
+    const slot = await pool.query(
+      'SELECT id, is_available FROM time_slots WHERE id = $1', [req.params.id]
+    );
+    if (slot.rows.length === 0) return res.status(404).json({ error: 'Слот табылмады' });
     if (!slot.rows[0].is_available) {
-      return res.status(400).json({ error: 'Нельзя удалить занятый слот' });
+      return res.status(400).json({ error: 'Брондалған слотты жоюға болмайды' });
     }
     await pool.query('DELETE FROM time_slots WHERE id = $1', [req.params.id]);
-    res.json({ message: 'Слот удалён' });
+    res.json({ message: 'Слот жойылды' });
   } catch (err) {
-    console.error('Delete slot error:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    console.error('Слотты жою қатесі:', err);
+    res.status(500).json({ error: 'Сервер қатесі' });
   }
 });
 
-// GET /api/admin/students/:id — single student full data
+// GET /api/admin/students/:id — студенттің толық деректері
 router.get('/students/:id', async (req, res) => {
   try {
     const student = await pool.query(
       'SELECT id, name, email, faculty, course, gender, age, created_at FROM users WHERE id = $1 AND role = $2',
       [req.params.id, 'student']
     );
-    if (student.rows.length === 0) return res.status(404).json({ error: 'Студент не найден' });
+    if (student.rows.length === 0) return res.status(404).json({ error: 'Студент табылмады' });
 
+    // Check-in тарихы, сеанстар және скрининг деректерін параллель алу
     const [checkIns, appointments, surveys] = await Promise.all([
       pool.query(
         `SELECT date, mood, stress, sleep, energy, productivity FROM check_ins
@@ -225,19 +243,25 @@ router.get('/students/:id', async (req, res) => {
       ),
     ]);
 
-    res.json({ student: student.rows[0], checkIns: checkIns.rows, appointments: appointments.rows, surveys: surveys.rows });
+    res.json({
+      student: student.rows[0],
+      checkIns: checkIns.rows,
+      appointments: appointments.rows,
+      surveys: surveys.rows,
+    });
   } catch (err) {
-    console.error('Admin student detail error:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    console.error('Студент деректілері қатесі:', err);
+    res.status(500).json({ error: 'Сервер қатесі' });
   }
 });
 
-// GET /api/admin/students — list all students with stats
+// GET /api/admin/students — студенттер тізімі (іздеу, сүзгі, беттеу)
 router.get('/students', async (req, res) => {
   try {
     const { search = '', faculty = '', risk = '', page = 1, limit = 25 } = req.query;
     const offset = (Number(page) - 1) * Number(limit);
 
+    // Іздеу, факультет және қауіп деңгейі сүзгілерімен студенттер тізімі
     const result = await pool.query(
       `SELECT
          u.id, u.name, u.email, u.faculty, u.course, u.gender, u.age, u.created_at,
@@ -250,11 +274,9 @@ router.get('/students', async (req, res) => {
          COALESCE(ap.session_count, 0) as session_count
        FROM users u
        LEFT JOIN LATERAL (
-         SELECT
-           MAX(date) as last_checkin,
-           COUNT(*) as checkin_count,
-           ROUND(AVG(stress)::numeric, 1) as avg_stress,
-           ROUND(AVG(mood)::numeric, 1) as avg_mood
+         SELECT MAX(date) as last_checkin, COUNT(*) as checkin_count,
+                ROUND(AVG(stress)::numeric, 1) as avg_stress,
+                ROUND(AVG(mood)::numeric, 1) as avg_mood
          FROM check_ins WHERE student_id = u.id AND date >= CURRENT_DATE - 30
        ) ci ON true
        LEFT JOIN LATERAL (
@@ -273,6 +295,7 @@ router.get('/students', async (req, res) => {
       [search, faculty, risk, Number(limit), offset]
     );
 
+    // Беттеу үшін жалпы сан
     const countResult = await pool.query(
       `SELECT COUNT(*) FROM users u
        LEFT JOIN LATERAL (
@@ -285,6 +308,7 @@ router.get('/students', async (req, res) => {
       [search, faculty, risk]
     );
 
+    // Факультеттер тізімі — сүзгі үшін
     const faculties = await pool.query(
       `SELECT DISTINCT faculty FROM users WHERE role = 'student' AND faculty IS NOT NULL ORDER BY faculty`
     );
@@ -297,8 +321,8 @@ router.get('/students', async (req, res) => {
       limit: Number(limit),
     });
   } catch (err) {
-    console.error('Admin students error:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    console.error('Студенттер тізімі қатесі:', err);
+    res.status(500).json({ error: 'Сервер қатесі' });
   }
 });
 

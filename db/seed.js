@@ -1,12 +1,15 @@
+// pool — PostgreSQL байланыс пулы
 const pool = require('./pool');
+// bcryptjs — құпия сөздерді хэштеу үшін
 const bcrypt = require('bcryptjs');
 
+// seed — дерекқорды тестілік деректермен толтырады
 async function seed() {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    // Clear existing data
+    // Барлық кестелерді тазалау (тәуелділік ретімен)
     await client.query('DELETE FROM chat_messages');
     await client.query('DELETE FROM surveys');
     await client.query('DELETE FROM session_notes');
@@ -15,9 +18,10 @@ async function seed() {
     await client.query('DELETE FROM time_slots');
     await client.query('DELETE FROM users');
 
+    // Барлық демо пайдаланушылар үшін бірыңғай хэш
     const hash = await bcrypt.hash('password123', 10);
 
-    // Create users
+    // Демо пайдаланушыларды жасау: 3 студент, 2 психолог, 1 әкімші
     const usersResult = await client.query(`
       INSERT INTO users (email, password_hash, role, name, faculty, course, gender, age, specialization, languages, experience_years, bio)
       VALUES
@@ -30,6 +34,7 @@ async function seed() {
       RETURNING id, role, email
     `, [hash]);
 
+    // Пайдаланушы ID-лерін email бойынша сәйкестендіру
     const users = {};
     usersResult.rows.forEach(u => {
       if (u.email === 'student1@university.kz') users.student1 = u.id;
@@ -39,19 +44,20 @@ async function seed() {
       if (u.email === 'psych2@university.kz') users.psych2 = u.id;
     });
 
-    // Create time slots for next 14 days
+    // Келесі 14 жұмыс күніне уақыт слоттарын жасау (демалыс күндері өткізіледі)
     const slotIds = [];
     for (let day = 0; day < 14; day++) {
       const date = new Date();
       date.setDate(date.getDate() + day);
-      if (date.getDay() === 0 || date.getDay() === 6) continue; // Skip weekends
+      if (date.getDay() === 0 || date.getDay() === 6) continue;
 
       const dateStr = date.toISOString().split('T')[0];
       const times = [
         ['09:00', '10:00'], ['10:00', '11:00'], ['11:00', '12:00'],
-        ['14:00', '15:00'], ['15:00', '16:00'], ['16:00', '17:00']
+        ['14:00', '15:00'], ['15:00', '16:00'], ['16:00', '17:00'],
       ];
 
+      // Екі психолог үшін де слоттар жасау
       for (const psychId of [users.psych1, users.psych2]) {
         for (const [start, end] of times) {
           const result = await client.query(
@@ -64,55 +70,58 @@ async function seed() {
       }
     }
 
-    // Create some appointments
+    // Демо сеанстарды жасау — бірнеше слотты бос емес деп белгілеу
     if (slotIds.length >= 4) {
-      // Mark some slots as taken
-      await client.query('UPDATE time_slots SET is_available = false WHERE id IN ($1, $2, $3, $4)', 
+      await client.query('UPDATE time_slots SET is_available = false WHERE id IN ($1, $2, $3, $4)',
         [slotIds[0], slotIds[1], slotIds[6], slotIds[7]]);
 
       await client.query(`
         INSERT INTO appointments (student_id, psychologist_id, slot_id, status, reason, format)
         VALUES
-          ($1, $5, $7, 'completed', 'Стресс из-за экзаменов', 'offline'),
-          ($1, $5, $8, 'scheduled', 'Продолжение консультации', 'offline'),
-          ($2, $6, $9, 'completed', 'Проблемы со сном', 'online'),
-          ($3, $6, $10, 'scheduled', 'Тревожность', 'offline')
-      `, [users.student1, users.student2, users.student3, null, users.psych1, users.psych2, slotIds[0], slotIds[1], slotIds[6], slotIds[7]]);
+          ($1, $4, $6, 'completed', 'Стресс из-за экзаменов', 'offline'),
+          ($1, $4, $7, 'scheduled', 'Продолжение консультации', 'offline'),
+          ($2, $5, $8, 'completed', 'Проблемы со сном', 'online'),
+          ($3, $5, $9, 'scheduled', 'Тревожность', 'offline')
+      `, [users.student1, users.student2, users.student3, users.psych1, users.psych2,
+          slotIds[0], slotIds[1], slotIds[6], slotIds[7]]);
 
-      // Session notes for completed appointments
-      const appts = await client.query('SELECT id, psychologist_id FROM appointments WHERE status = $1', ['completed']);
+      // Аяқталған сеанстарға жазбалар қосу
+      const appts = await client.query(
+        'SELECT id, psychologist_id FROM appointments WHERE status = $1', ['completed']
+      );
       for (const appt of appts.rows) {
         await client.query(`
           INSERT INTO session_notes (appointment_id, psychologist_id, condition_before, condition_after, recommend_followup, tags, notes)
           VALUES ($1, $2, $3, $4, $5, $6, $7)
-        `, [appt.id, appt.psychologist_id, 4, 7, true, 'стресс,экзамены', 'Студент испытывает значительный стресс перед экзаменами. Рекомендована дыхательная терапия.']);
+        `, [appt.id, appt.psychologist_id, 4, 7, true, 'стресс,экзамены',
+            'Студент испытывает значительный стресс перед экзаменами. Рекомендована дыхательная терапия.']);
       }
     }
 
-    // Generate check-in data for 4 weeks
+    // 4 аптаға ретроспективті check-in деректерін жасау (20% күн кездейсоқ өткізіледі)
     for (const studentId of [users.student1, users.student2, users.student3]) {
       for (let day = 28; day >= 0; day--) {
         const date = new Date();
         date.setDate(date.getDate() - day);
-        if (Math.random() < 0.2) continue; // Skip some days randomly
+        if (Math.random() < 0.2) continue;
 
         const dateStr = date.toISOString().split('T')[0];
-        const mood = Math.floor(Math.random() * 3) + 2;       // 2-4
-        const stress = Math.floor(Math.random() * 3) + 2;     // 2-4
-        const sleep = Math.floor(Math.random() * 3) + 2;      // 2-4
-        const energy = Math.floor(Math.random() * 3) + 2;     // 2-4
-        const productivity = Math.floor(Math.random() * 3) + 2;// 2-4
+        // Барлық көрсеткіштер 2–4 аралығында (орташа диапазон)
+        const mood         = Math.floor(Math.random() * 3) + 2;
+        const stress       = Math.floor(Math.random() * 3) + 2;
+        const sleep        = Math.floor(Math.random() * 3) + 2;
+        const energy       = Math.floor(Math.random() * 3) + 2;
+        const productivity = Math.floor(Math.random() * 3) + 2;
 
         await client.query(
           `INSERT INTO check_ins (student_id, date, mood, stress, sleep, energy, productivity)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)
-           ON CONFLICT DO NOTHING`,
+           VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING`,
           [studentId, dateStr, mood, stress, sleep, energy, productivity]
         );
       }
     }
 
-    // Sample survey
+    // Демо скрининг сауалнамалары
     await client.query(`
       INSERT INTO surveys (student_id, type, answers, score, risk_level)
       VALUES
@@ -121,14 +130,14 @@ async function seed() {
     `, [users.student1, users.student2]);
 
     await client.query('COMMIT');
-    console.log('✅ Database seeded successfully');
-    console.log('📧 Demo accounts:');
-    console.log('   Student:      student1@university.kz / password123');
-    console.log('   Psychologist:  psych1@university.kz / password123');
-    console.log('   Admin:        admin@university.kz / password123');
+    console.log('Дерекқор сәтті толтырылды');
+    console.log('Демо аккаунттар:');
+    console.log('  Студент:    student1@university.kz / password123');
+    console.log('  Психолог:   psych1@university.kz / password123');
+    console.log('  Әкімші:     admin@university.kz / password123');
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error('❌ Error seeding database:', err);
+    console.error('Дерекқорды толтыруда қате:', err);
     throw err;
   } finally {
     client.release();

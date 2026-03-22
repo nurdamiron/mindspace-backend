@@ -1,14 +1,20 @@
+// express — маршрутизатор жасау үшін
 const express = require('express');
+// pool — дерекқор сұраныстары үшін
 const pool = require('../db/pool');
+// authenticate, authorize — токен тексеру және рөл шектеу middleware
 const { authenticate, authorize } = require('../middleware/auth');
+// aiLimiter — ИИ эндпоинттеріне сұраныс санын шектейді
 const { aiLimiter } = require('../middleware/rateLimits');
+// OpenAI — Perplexity API-мен жұмыс жасау үшін (OpenAI-совместимый)
 const { OpenAI } = require('openai');
 
 const router = express.Router();
 
+// Барлық маршруттар тек психолог рөліне ғана қол жетімді
 router.use(authenticate, authorize('psychologist'));
 
-// GET /api/psychologist/profile — get own profile
+// GET /api/psychologist/profile — психологтың өз профилін алу
 router.get('/profile', async (req, res) => {
   try {
     const result = await pool.query(
@@ -17,11 +23,11 @@ router.get('/profile', async (req, res) => {
     );
     res.json(result.rows[0]);
   } catch (err) {
-    res.status(500).json({ error: 'Ошибка сервера' });
+    res.status(500).json({ error: 'Сервер қатесі' });
   }
 });
 
-// PATCH /api/psychologist/profile — update own profile
+// PATCH /api/psychologist/profile — психологтың өз профилін жаңарту
 router.patch('/profile', async (req, res) => {
   try {
     const { name, specialization, languages, experience_years, bio } = req.body;
@@ -33,15 +39,16 @@ router.patch('/profile', async (req, res) => {
     );
     res.json(result.rows[0]);
   } catch (err) {
-    res.status(500).json({ error: 'Ошибка сервера' });
+    res.status(500).json({ error: 'Сервер қатесі' });
   }
 });
 
-// GET /api/psychologist/schedule — today's and future schedule
+// GET /api/psychologist/schedule — кесте (бүгін / апта / барлық)
 router.get('/schedule', async (req, res) => {
   try {
     const { period = 'today' } = req.query;
 
+    // Кезең параметріне байланысты күн сүзгісі
     let dateFilter = 'ts.date = CURRENT_DATE';
     if (period === 'week') dateFilter = 'ts.date BETWEEN CURRENT_DATE AND CURRENT_DATE + 7';
     if (period === 'all') dateFilter = 'ts.date >= CURRENT_DATE';
@@ -61,35 +68,36 @@ router.get('/schedule', async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
-    console.error('Schedule error:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    console.error('Кесте алу қатесі:', err);
+    res.status(500).json({ error: 'Сервер қатесі' });
   }
 });
 
-// GET /api/psychologist/students/:id — student card
+// GET /api/psychologist/students/:id — студент картасын алу
 router.get('/students/:id', async (req, res) => {
   try {
-    // Verify this student has an appointment with this psychologist
+    // Осы студентпен сеанс болғанын тексеру (қол жеткізу құқығы)
     const access = await pool.query(
       'SELECT id FROM appointments WHERE student_id = $1 AND psychologist_id = $2 LIMIT 1',
       [req.params.id, req.user.id]
     );
     if (access.rows.length === 0) {
-      return res.status(403).json({ error: 'Нет доступа к данным студента' });
+      return res.status(403).json({ error: 'Студент деректеріне қол жеткізу жоқ' });
     }
 
+    // Студент негізгі деректерін алу
     const student = await pool.query(
       'SELECT id, faculty, course, gender, age FROM users WHERE id = $1 AND role = $2',
       [req.params.id, 'student']
     );
     if (student.rows.length === 0) {
-      return res.status(404).json({ error: 'Студент не найден' });
+      return res.status(404).json({ error: 'Студент табылмады' });
     }
 
+    // Check-in тарихы, сеанстар және скрининг нәтижелерін параллель алу
     const checkIns = await pool.query(
       `SELECT date, mood, stress, sleep, energy, productivity FROM check_ins
-       WHERE student_id = $1 AND date >= CURRENT_DATE - 30
-       ORDER BY date ASC`,
+       WHERE student_id = $1 AND date >= CURRENT_DATE - 30 ORDER BY date ASC`,
       [req.params.id]
     );
 
@@ -116,38 +124,39 @@ router.get('/students/:id', async (req, res) => {
       surveys: surveys.rows,
     });
   } catch (err) {
-    console.error('Student card error:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    console.error('Студент картасы қатесі:', err);
+    res.status(500).json({ error: 'Сервер қатесі' });
   }
 });
 
-// POST /api/psychologist/sessions/:appointmentId/notes — add session notes
+// POST /api/psychologist/sessions/:appointmentId/notes — сеанс жазбасын қосу
 router.post('/sessions/:appointmentId/notes', async (req, res) => {
   try {
     const { condition_before, condition_after, recommend_followup, tags, notes } = req.body;
 
-    // Verify appointment belongs to this psychologist
+    // Сеанстың осы психологқа тиесілі екенін тексеру
     const appt = await pool.query(
       'SELECT id FROM appointments WHERE id = $1 AND psychologist_id = $2',
       [req.params.appointmentId, req.user.id]
     );
     if (appt.rows.length === 0) {
-      return res.status(404).json({ error: 'Запись не найдена' });
+      return res.status(404).json({ error: 'Жазба табылмады' });
     }
 
     const result = await pool.query(
       `INSERT INTO session_notes (appointment_id, psychologist_id, condition_before, condition_after, recommend_followup, tags, notes)
        VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [req.params.appointmentId, req.user.id, condition_before, condition_after, recommend_followup || false, tags || '', notes || '']
+      [req.params.appointmentId, req.user.id, condition_before, condition_after,
+       recommend_followup || false, tags || '', notes || '']
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
-    console.error('Session notes error:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    console.error('Сеанс жазбасы қатесі:', err);
+    res.status(500).json({ error: 'Сервер қатесі' });
   }
 });
 
-// PATCH /api/psychologist/appointments/:id/complete — mark as completed
+// PATCH /api/psychologist/appointments/:id/complete — сеансты аяқталды деп белгілеу
 router.patch('/appointments/:id/complete', async (req, res) => {
   try {
     const result = await pool.query(
@@ -157,18 +166,19 @@ router.patch('/appointments/:id/complete', async (req, res) => {
       [req.params.id, req.user.id]
     );
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Запись не найдена или уже завершена' });
+      return res.status(404).json({ error: 'Жазба табылмады немесе бұрын аяқталған' });
     }
     res.json(result.rows[0]);
   } catch (err) {
-    console.error('Complete appointment error:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    console.error('Сеансты аяқтау қатесі:', err);
+    res.status(500).json({ error: 'Сервер қатесі' });
   }
 });
 
-// GET /api/psychologist/stats — statistics
+// GET /api/psychologist/stats — психолог статистикасы
 router.get('/stats', async (req, res) => {
   try {
+    // Барлық сеанстар санауышы
     const totalSessions = await pool.query(
       `SELECT COUNT(*) as total,
               COUNT(*) FILTER (WHERE status = 'completed') as completed,
@@ -177,11 +187,13 @@ router.get('/stats', async (req, res) => {
       [req.user.id]
     );
 
+    // Бірегей студенттер саны
     const uniqueStudents = await pool.query(
       'SELECT COUNT(DISTINCT student_id) as count FROM appointments WHERE psychologist_id = $1',
       [req.user.id]
     );
 
+    // Соңғы 30 күндегі апталық жүктеме
     const weeklyLoad = await pool.query(
       `SELECT ts.date, COUNT(*) as count
        FROM appointments a JOIN time_slots ts ON a.slot_id = ts.id
@@ -190,6 +202,7 @@ router.get('/stats', async (req, res) => {
       [req.user.id]
     );
 
+    // Тег статистикасы
     const tagStats = await pool.query(
       `SELECT tags, COUNT(*) as count FROM session_notes
        WHERE psychologist_id = $1 AND tags != '' GROUP BY tags`,
@@ -203,31 +216,56 @@ router.get('/stats', async (req, res) => {
       tagStats: tagStats.rows,
     });
   } catch (err) {
-    console.error('Stats error:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    console.error('Статистика қатесі:', err);
+    res.status(500).json({ error: 'Сервер қатесі' });
   }
 });
 
-// POST /api/psychologist/students/:id/ai-summary — AI pre-session briefing
+// GET /api/psychologist/students — осы психологтың студенттер тізімі
+router.get('/students', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT DISTINCT u.id, u.name, u.faculty, u.course, u.gender, u.age,
+              COUNT(a.id)::int as total_sessions,
+              COUNT(a.id) FILTER (WHERE a.status = 'completed')::int as completed_sessions,
+              MAX(ts.date) as last_session,
+              (SELECT risk_level FROM surveys WHERE student_id = u.id ORDER BY created_at DESC LIMIT 1) as latest_risk
+       FROM appointments a
+       JOIN users u ON a.student_id = u.id
+       JOIN time_slots ts ON a.slot_id = ts.id
+       WHERE a.psychologist_id = $1
+       GROUP BY u.id, u.name, u.faculty, u.course, u.gender, u.age
+       ORDER BY MAX(ts.date) DESC`,
+      [req.user.id]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Студенттер тізімі қатесі:', err);
+    res.status(500).json({ error: 'Сервер қатесі' });
+  }
+});
+
+// POST /api/psychologist/students/:id/ai-summary — сеанс алдындағы ИИ сараптамасы
 router.post('/students/:id/ai-summary', aiLimiter, async (req, res) => {
   try {
+    // Қол жеткізу құқығын тексеру
     const access = await pool.query(
       'SELECT id FROM appointments WHERE student_id = $1 AND psychologist_id = $2 LIMIT 1',
       [req.params.id, req.user.id]
     );
     if (access.rows.length === 0) {
-      return res.status(403).json({ error: 'Нет доступа к данным студента' });
+      return res.status(403).json({ error: 'Студент деректеріне қол жеткізу жоқ' });
     }
 
     if (!process.env.PERPLEXITY_API_KEY) {
-      return res.status(503).json({ error: 'AI-сервис недоступен' });
+      return res.status(503).json({ error: 'ИИ қызметі қол жетімді емес' });
     }
 
+    // Check-in, сеанстар және скрининг деректерін параллель алу
     const [checkIns, appointments, surveys] = await Promise.all([
       pool.query(
         `SELECT date, mood, stress, sleep, energy, productivity
-         FROM check_ins WHERE student_id = $1
-         ORDER BY date DESC LIMIT 14`,
+         FROM check_ins WHERE student_id = $1 ORDER BY date DESC LIMIT 14`,
         [req.params.id]
       ),
       pool.query(
@@ -247,6 +285,7 @@ router.post('/students/:id/ai-summary', aiLimiter, async (req, res) => {
       ),
     ]);
 
+    // Орташа стресс және көңіл-күй есептеу
     const avgStress = checkIns.rows.length
       ? (checkIns.rows.reduce((s, r) => s + r.stress, 0) / checkIns.rows.length).toFixed(1)
       : null;
@@ -275,7 +314,13 @@ ${JSON.stringify(surveys.rows.map(s => ({ балл: s.score + '/25', риск: s
 **На что обратить внимание** — 2-3 конкретных момента для сессии.
 **Рекомендуемые темы** — что стоит обсудить.
 
-Тон: профессиональный, клинически нейтральный. Без диагнозов. Кратко.`;
+Тон: профессиональный, клинически нейтральный. Без диагнозов. Кратко.
+
+Строгие правила форматирования:
+- Никаких сносок вида [1], [2], [3] и т.п.
+- Никаких внешних ссылок и URL
+- Не упоминай себя, не говори что ты ИИ, ассистент, языковая модель или любой сервис
+- Только структурированный текст по заданным разделам`;
 
     const client = new OpenAI({
       apiKey: process.env.PERPLEXITY_API_KEY,
@@ -286,12 +331,76 @@ ${JSON.stringify(surveys.rows.map(s => ({ балл: s.score + '/25', риск: s
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.7,
     });
-    const summary = completion.choices[0].message.content;
+
+    // Citation маркерлері мен URL-дерді алып тастау
+    const raw = completion.choices[0].message.content;
+    const summary = raw
+      .replace(/\[\d+\]/g, '')
+      .replace(/https?:\/\/\S+/g, '')
+      .replace(/^\s*\[\d[\d,\s]*\].*$/gm, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
 
     res.json({ summary });
   } catch (err) {
-    console.error('AI Summary error:', err);
-    res.status(500).json({ error: 'Ошибка AI-анализа' });
+    console.error('ИИ сараптама қатесі:', err);
+    res.status(500).json({ error: 'ИИ талдауында қате' });
+  }
+});
+
+// GET /api/psychologist/slots — психологтың бос слоттары
+router.get('/slots', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, date, start_time, end_time, is_available FROM time_slots
+       WHERE psychologist_id = $1 AND date >= CURRENT_DATE
+       ORDER BY date ASC, start_time ASC`,
+      [req.user.id]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Сервер қатесі' });
+  }
+});
+
+// POST /api/psychologist/slots — жаңа уақыт слоттарын жасау
+router.post('/slots', async (req, res) => {
+  try {
+    const { date, slots } = req.body;
+    if (!date || !Array.isArray(slots) || slots.length === 0) {
+      return res.status(400).json({ error: 'Күн мен слоттарды көрсетіңіз' });
+    }
+    // Барлық слоттарды бірізді жасау
+    const created = [];
+    for (const { start_time, end_time } of slots) {
+      const r = await pool.query(
+        `INSERT INTO time_slots (psychologist_id, date, start_time, end_time, is_available)
+         VALUES ($1, $2, $3, $4, true) RETURNING *`,
+        [req.user.id, date, start_time, end_time]
+      );
+      created.push(r.rows[0]);
+    }
+    res.status(201).json(created);
+  } catch (err) {
+    console.error('Слот жасау қатесі:', err);
+    res.status(500).json({ error: 'Сервер қатесі' });
+  }
+});
+
+// DELETE /api/psychologist/slots/:id — бос слотты жою
+router.delete('/slots/:id', async (req, res) => {
+  try {
+    // Тек осы психологтың бос слотын жоюға болады
+    const result = await pool.query(
+      `DELETE FROM time_slots WHERE id = $1 AND psychologist_id = $2 AND is_available = true RETURNING id`,
+      [req.params.id, req.user.id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Слот табылмады немесе бұрын брондалған' });
+    }
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Сервер қатесі' });
   }
 });
 

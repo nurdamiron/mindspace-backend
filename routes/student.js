@@ -1,17 +1,23 @@
+// express — маршрутизатор жасау үшін
 const express = require('express');
+// pool — дерекқор сұраныстары үшін
 const pool = require('../db/pool');
+// authenticate, authorize — токен тексеру және рөл шектеу middleware
 const { authenticate, authorize } = require('../middleware/auth');
+// aiLimiter — ИИ эндпоинттеріне сұраныс санын шектейді
 const { aiLimiter } = require('../middleware/rateLimits');
+// OpenAI — Perplexity API-мен жұмыс жасау үшін (OpenAI-совместимый)
 const { OpenAI } = require('openai');
 
 const router = express.Router();
 
-// All routes require student role
+// Барлық маршруттар тек студент рөліне ғана қол жетімді
 router.use(authenticate, authorize('student'));
 
-// GET /api/student/check-ins — history of check-ins
+// GET /api/student/check-ins — студенттің check-in тарихын алу
 router.get('/check-ins', async (req, res) => {
   try {
+    // days параметрі бойынша соңғы N күндегі жазбаларды қайтару
     const { days = 30 } = req.query;
     const result = await pool.query(
       `SELECT * FROM check_ins WHERE student_id = $1 AND date >= CURRENT_DATE - $2::INTEGER
@@ -20,57 +26,57 @@ router.get('/check-ins', async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
-    console.error('CheckIn GET error:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    console.error('Check-in алу қатесі:', err);
+    res.status(500).json({ error: 'Сервер қатесі' });
   }
 });
 
-// POST /api/student/check-ins — create a new check-in
+// POST /api/student/check-ins — жаңа check-in жазбасын жасау
 router.post('/check-ins', async (req, res) => {
   try {
     const { mood, stress, sleep, energy, productivity, notes } = req.body;
 
-    // Validate values are in range 1–5
+    // Барлық өрістер 1–5 аралығында екенін тексеру
     const fields = { mood, stress, sleep, energy, productivity };
     for (const [key, val] of Object.entries(fields)) {
       const n = Number(val);
       if (!Number.isInteger(n) || n < 1 || n > 5) {
-        return res.status(400).json({ error: `Значение ${key} должно быть от 1 до 5` });
+        return res.status(400).json({ error: `${key} мәні 1-ден 5-ке дейін болуы керек` });
       }
     }
 
-    // Prevent duplicate check-in for today
+    // Бүгін бұрын check-in жазылған-жазылмағанын тексеру
     const existing = await pool.query(
       'SELECT id FROM check_ins WHERE student_id = $1 AND date = CURRENT_DATE',
       [req.user.id]
     );
     if (existing.rows.length > 0) {
-      return res.status(409).json({ error: 'Вы уже заполнили чек-ин сегодня' });
+      return res.status(409).json({ error: 'Бүгін check-in бұрын толтырылған' });
     }
 
     const result = await pool.query(
       `INSERT INTO check_ins (student_id, date, mood, stress, sleep, energy, productivity, notes)
-       VALUES ($1, CURRENT_DATE, $2, $3, $4, $5, $6, $7)
-       RETURNING *`,
+       VALUES ($1, CURRENT_DATE, $2, $3, $4, $5, $6, $7) RETURNING *`,
       [req.user.id, mood, stress, sleep, energy, productivity, notes || null]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
-    console.error('CheckIn POST error:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    console.error('Check-in жасау қатесі:', err);
+    res.status(500).json({ error: 'Сервер қатесі' });
   }
 });
 
-// GET /api/student/stats — personal statistics
+// GET /api/student/stats — студенттің жеке статистикасы
 router.get('/stats', async (req, res) => {
   try {
+    // Соңғы 30 күндегі check-in деректері
     const checkIns = await pool.query(
       `SELECT date, mood, stress, sleep, energy, productivity FROM check_ins
-       WHERE student_id = $1 AND date >= CURRENT_DATE - 30
-       ORDER BY date ASC`,
+       WHERE student_id = $1 AND date >= CURRENT_DATE - 30 ORDER BY date ASC`,
       [req.user.id]
     );
 
+    // Барлық сеанстар статистикасы
     const appointments = await pool.query(
       `SELECT COUNT(*) as total,
               COUNT(*) FILTER (WHERE status = 'completed') as completed,
@@ -79,6 +85,7 @@ router.get('/stats', async (req, res) => {
       [req.user.id]
     );
 
+    // Соңғы 7 күндегі орташа көрсеткіштер
     const avgResult = await pool.query(
       `SELECT
         ROUND(AVG(mood)::numeric, 1) as avg_mood,
@@ -96,12 +103,12 @@ router.get('/stats', async (req, res) => {
       weeklyAverages: avgResult.rows[0],
     });
   } catch (err) {
-    console.error('Stats error:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    console.error('Статистика қатесі:', err);
+    res.status(500).json({ error: 'Сервер қатесі' });
   }
 });
 
-// GET /api/student/psychologists — catalog
+// GET /api/student/psychologists — психологтар каталогы
 router.get('/psychologists', async (req, res) => {
   try {
     const result = await pool.query(
@@ -110,12 +117,12 @@ router.get('/psychologists', async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
-    console.error('Psychologists error:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    console.error('Психологтар тізімі қатесі:', err);
+    res.status(500).json({ error: 'Сервер қатесі' });
   }
 });
 
-// GET /api/student/psychologists/:id/slots — available slots
+// GET /api/student/psychologists/:id/slots — психологтың бос слоттары
 router.get('/psychologists/:id/slots', async (req, res) => {
   try {
     const result = await pool.query(
@@ -126,26 +133,26 @@ router.get('/psychologists/:id/slots', async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
-    console.error('Slots error:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    console.error('Слоттар алу қатесі:', err);
+    res.status(500).json({ error: 'Сервер қатесі' });
   }
 });
 
-// POST /api/student/appointments — create an appointment
+// POST /api/student/appointments — жаңа сеанс жазылу
 router.post('/appointments', async (req, res) => {
   try {
     const { psychologist_id, slot_id, reason, format } = req.body;
 
-    // Check if slot is available
+    // Слоттың бос екенін тексеру
     const slot = await pool.query(
       'SELECT * FROM time_slots WHERE id = $1 AND is_available = true',
       [slot_id]
     );
     if (slot.rows.length === 0) {
-      return res.status(400).json({ error: 'Слот уже занят или не существует' });
+      return res.status(400).json({ error: 'Слот бос емес немесе жоқ' });
     }
 
-    // Mark slot as unavailable
+    // Слотты бос емес деп белгілеу
     await pool.query('UPDATE time_slots SET is_available = false WHERE id = $1', [slot_id]);
 
     const result = await pool.query(
@@ -156,12 +163,12 @@ router.post('/appointments', async (req, res) => {
 
     res.status(201).json(result.rows[0]);
   } catch (err) {
-    console.error('Appointment POST error:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    console.error('Сеанс жазылу қатесі:', err);
+    res.status(500).json({ error: 'Сервер қатесі' });
   }
 });
 
-// GET /api/student/appointments — my appointments
+// GET /api/student/appointments — студенттің барлық сеанстары
 router.get('/appointments', async (req, res) => {
   try {
     const result = await pool.query(
@@ -176,16 +183,16 @@ router.get('/appointments', async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
-    console.error('Appointments GET error:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    console.error('Сеанстар алу қатесі:', err);
+    res.status(500).json({ error: 'Сервер қатесі' });
   }
 });
 
-// POST /api/student/surveys — submit a survey
+// POST /api/student/surveys — скрининг сауалнамасын жіберу
 router.post('/surveys', async (req, res) => {
   try {
     const { type, answers } = req.body;
-    // Calculate simple score
+    // Жауаптар қосындысы арқылы қауіп деңгейін есептеу
     const values = Object.values(answers);
     const score = values.reduce((a, b) => a + b, 0);
     const risk_level = score <= 10 ? 'low' : score <= 16 ? 'moderate' : 'high';
@@ -197,34 +204,36 @@ router.post('/surveys', async (req, res) => {
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
-    console.error('Survey POST error:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    console.error('Сауалнама жіберу қатесі:', err);
+    res.status(500).json({ error: 'Сервер қатесі' });
   }
 });
 
-// PATCH /api/student/appointments/:id/cancel — cancel appointment
+// PATCH /api/student/appointments/:id/cancel — сеансты болдырмау
 router.patch('/appointments/:id/cancel', async (req, res) => {
   try {
+    // Сеанстың осы студентке тиесілі екенін тексеру
     const appt = await pool.query(
       `SELECT a.id, a.slot_id, a.status FROM appointments a
        WHERE a.id = $1 AND a.student_id = $2`,
       [req.params.id, req.user.id]
     );
-    if (appt.rows.length === 0) return res.status(404).json({ error: 'Запись не найдена' });
+    if (appt.rows.length === 0) return res.status(404).json({ error: 'Жазба табылмады' });
     if (appt.rows[0].status !== 'scheduled') {
-      return res.status(400).json({ error: 'Можно отменить только запланированные записи' });
+      return res.status(400).json({ error: 'Тек жоспарланған жазбаларды болдырмауға болады' });
     }
 
+    // Сеансты болдырмау және слотты босату
     await pool.query('UPDATE appointments SET status = $1 WHERE id = $2', ['cancelled', req.params.id]);
     await pool.query('UPDATE time_slots SET is_available = true WHERE id = $1', [appt.rows[0].slot_id]);
-    res.json({ message: 'Запись отменена' });
+    res.json({ message: 'Жазба болдырылмады' });
   } catch (err) {
-    console.error('Cancel appointment error:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    console.error('Болдырмау қатесі:', err);
+    res.status(500).json({ error: 'Сервер қатесі' });
   }
 });
 
-// POST /api/student/appointments/:id/feedback — appointment feedback
+// POST /api/student/appointments/:id/feedback — сеансқа баға беру
 router.post('/appointments/:id/feedback', async (req, res) => {
   try {
     const { feedback_score, feedback_text } = req.body;
@@ -234,16 +243,16 @@ router.post('/appointments/:id/feedback', async (req, res) => {
       [feedback_score, feedback_text, req.params.id, req.user.id]
     );
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Запись не найдена' });
+      return res.status(404).json({ error: 'Жазба табылмады' });
     }
     res.json(result.rows[0]);
   } catch (err) {
-    console.error('Feedback error:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    console.error('Баға беру қатесі:', err);
+    res.status(500).json({ error: 'Сервер қатесі' });
   }
 });
 
-// GET /api/student/chat — get chat history
+// GET /api/student/chat — чат тарихын алу
 router.get('/chat', async (req, res) => {
   try {
     const result = await pool.query(
@@ -252,27 +261,28 @@ router.get('/chat', async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
-    res.status(500).json({ error: 'Ошибка сервера' });
+    res.status(500).json({ error: 'Сервер қатесі' });
   }
 });
 
-// POST /api/student/ai-chat — send message to AI chat
+// POST /api/student/ai-chat — ИИ-ға хабарлама жіберу және жауап алу
 router.post('/ai-chat', aiLimiter, async (req, res) => {
   try {
     const { content: message } = req.body;
 
-    // Get chat history BEFORE saving current message to avoid duplication
+    // Чат тарихын жіберер алдын алу (қайталауды болдырмау үшін)
     const historyResult = await pool.query(
       'SELECT role, content FROM chat_messages WHERE student_id = $1 ORDER BY created_at ASC LIMIT 20',
       [req.user.id]
     );
 
-    // Save user message
+    // Студент хабарламасын дерекқорға сақтау
     await pool.query(
       'INSERT INTO chat_messages (student_id, role, content) VALUES ($1, $2, $3)',
       [req.user.id, 'user', message]
     );
 
+    // Жүйелік нұсқаулық — ИИ мінез-құлқын анықтайды
     const systemPrompt = `Ты — эмпатичный виртуальный помощник платформы психологической поддержки студентов MindSpace.
 Твоя цель: выслушать студента, поддержать его, помочь справиться со стрессом, дать базовые советы по саморегуляции (дыхание, режим дня, заземление).
 Правила:
@@ -281,15 +291,18 @@ router.post('/ai-chat', aiLimiter, async (req, res) => {
 3. Используй форматирование Markdown для структурирования длинных списков или советов.
 4. Общайся уважительно на "вы", будь поддерживающим и кратким.`;
 
+    // API кілті жоқ болса — fallback жауап
     if (!process.env.PERPLEXITY_API_KEY) {
-      return res.json({ reply: 'Извините, AI-помощник сейчас недоступен (не настроен ключ API).' });
+      return res.json({ reply: 'ИИ-көмекші қазір қол жетімді емес (API кілті орнатылмаған).' });
     }
 
+    // Perplexity API клиентін жасау (OpenAI SDK арқылы)
     const client = new OpenAI({
       apiKey: process.env.PERPLEXITY_API_KEY,
       baseURL: 'https://api.perplexity.ai',
     });
 
+    // Чат тарихын API форматына түрлендіру
     const formattedHistory = historyResult.rows.map(msg => ({
       role: msg.role === 'user' ? 'user' : 'assistant',
       content: msg.content,
@@ -305,9 +318,13 @@ router.post('/ai-chat', aiLimiter, async (req, res) => {
       temperature: 0.7,
     });
 
-    const aiResponse = completion.choices[0].message.content.replace(/\[\d+\]/g, '').replace(/\s{2,}/g, ' ').trim();
+    // Perplexity citation маркерлерін [1][4] алып тастау
+    const aiResponse = completion.choices[0].message.content
+      .replace(/\[\d+\]/g, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
 
-    // Save AI message
+    // ИИ жауабын дерекқорға сақтау
     await pool.query(
       'INSERT INTO chat_messages (student_id, role, content) VALUES ($1, $2, $3)',
       [req.user.id, 'assistant', aiResponse]
@@ -315,12 +332,12 @@ router.post('/ai-chat', aiLimiter, async (req, res) => {
 
     res.json({ reply: aiResponse });
   } catch (err) {
-    console.error('Chat error:', err);
-    res.status(500).json({ error: 'Ошибка сервера при работе с ИИ' });
+    console.error('ИИ чат қатесі:', err);
+    res.status(500).json({ error: 'ИИ-мен жұмыс кезінде сервер қатесі' });
   }
 });
 
-// GET /api/student/profile — get own profile
+// GET /api/student/profile — студенттің өз профилін алу
 router.get('/profile', async (req, res) => {
   try {
     const result = await pool.query(
@@ -329,11 +346,11 @@ router.get('/profile', async (req, res) => {
     );
     res.json(result.rows[0]);
   } catch (err) {
-    res.status(500).json({ error: 'Ошибка сервера' });
+    res.status(500).json({ error: 'Сервер қатесі' });
   }
 });
 
-// PATCH /api/student/profile — update own profile
+// PATCH /api/student/profile — студенттің өз профилін жаңарту
 router.patch('/profile', async (req, res) => {
   try {
     const { name, faculty, course, gender, age } = req.body;
@@ -344,34 +361,36 @@ router.patch('/profile', async (req, res) => {
     );
     res.json(result.rows[0]);
   } catch (err) {
-    res.status(500).json({ error: 'Ошибка сервера' });
+    res.status(500).json({ error: 'Сервер қатесі' });
   }
 });
 
-// POST /api/student/ai-insight — personalized AI analysis of check-in trends
+// POST /api/student/ai-insight — check-in трендтеріне ИИ талдауы
 router.post('/ai-insight', aiLimiter, async (req, res) => {
   try {
     if (!process.env.PERPLEXITY_API_KEY) {
-      return res.status(503).json({ error: 'AI-сервис недоступен' });
+      return res.status(503).json({ error: 'ИИ қызметі қол жетімді емес' });
     }
 
+    // Соңғы 7 check-in деректерін алу
     const checkIns = await pool.query(
       `SELECT date, mood, stress, sleep, energy, productivity
-       FROM check_ins WHERE student_id = $1
-       ORDER BY date DESC LIMIT 7`,
+       FROM check_ins WHERE student_id = $1 ORDER BY date DESC LIMIT 7`,
       [req.user.id]
     );
 
     if (checkIns.rows.length === 0) {
-      return res.status(400).json({ error: 'Недостаточно данных. Заполните хотя бы один чек-ин.' });
+      return res.status(400).json({ error: 'Деректер жеткіліксіз. Кемінде бір check-in толтырыңыз.' });
     }
 
+    // Соңғы скрининг нәтижесі
     const lastSurvey = await pool.query(
       `SELECT score, risk_level FROM surveys
        WHERE student_id = $1 ORDER BY created_at DESC LIMIT 1`,
       [req.user.id]
     );
 
+    // ИИ-ға жіберілетін деректерді форматтау
     const rows = checkIns.rows.map(r => ({
       дата: r.date,
       настроение: r.mood,
@@ -408,12 +427,17 @@ ${JSON.stringify(rows, null, 2)}
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.7,
     });
-    const insight = completion.choices[0].message.content.replace(/\[\d+\]/g, '').replace(/\s{2,}/g, ' ').trim();
+
+    // Citation маркерлерін алып тастау
+    const insight = completion.choices[0].message.content
+      .replace(/\[\d+\]/g, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
 
     res.json({ insight });
   } catch (err) {
-    console.error('AI Insight error:', err);
-    res.status(500).json({ error: 'Ошибка AI-анализа' });
+    console.error('ИИ талдау қатесі:', err);
+    res.status(500).json({ error: 'ИИ талдауында қате' });
   }
 });
 

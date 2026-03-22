@@ -1,11 +1,14 @@
+// pool — PostgreSQL байланыс пулы
 const pool = require('./pool');
 
+// initSchema — барлық кестелерді жасайды (бұрын жоқ болса ғана)
 async function initSchema() {
+  // Транзакция үшін жеке клиент алу
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    // Users table (unified for all roles)
+    // users — барлық рөлдер үшін бірыңғай кесте (student, psychologist, admin)
     await client.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
@@ -26,7 +29,7 @@ async function initSchema() {
       );
     `);
 
-    // Time slots for psychologists
+    // time_slots — психологтардың бос уақыт слоттары
     await client.query(`
       CREATE TABLE IF NOT EXISTS time_slots (
         id SERIAL PRIMARY KEY,
@@ -39,7 +42,7 @@ async function initSchema() {
       );
     `);
 
-    // Appointments
+    // appointments — студент пен психолог арасындағы сеанстар
     await client.query(`
       CREATE TABLE IF NOT EXISTS appointments (
         id SERIAL PRIMARY KEY,
@@ -55,7 +58,7 @@ async function initSchema() {
       );
     `);
 
-    // Daily check-ins (mood, stress, sleep, energy, productivity)
+    // check_ins — студенттің күнделікті психологиялық күй тіркелімі
     await client.query(`
       CREATE TABLE IF NOT EXISTS check_ins (
         id SERIAL PRIMARY KEY,
@@ -71,7 +74,7 @@ async function initSchema() {
       );
     `);
 
-    // Session notes by psychologists
+    // session_notes — психологтың сеанс нәтижесіндегі жазбалары
     await client.query(`
       CREATE TABLE IF NOT EXISTS session_notes (
         id SERIAL PRIMARY KEY,
@@ -86,7 +89,7 @@ async function initSchema() {
       );
     `);
 
-    // Screening surveys
+    // surveys — студенттің скрининг сауалнама нәтижелері
     await client.query(`
       CREATE TABLE IF NOT EXISTS surveys (
         id SERIAL PRIMARY KEY,
@@ -99,7 +102,7 @@ async function initSchema() {
       );
     `);
 
-    // AI chat messages
+    // chat_messages — студент пен ИИ арасындағы чат хабарламалары
     await client.query(`
       CREATE TABLE IF NOT EXISTS chat_messages (
         id SERIAL PRIMARY KEY,
@@ -111,17 +114,18 @@ async function initSchema() {
     `);
 
     await client.query('COMMIT');
-    console.log('✅ Database schema initialized successfully');
+    console.log('Дерекқор схемасы сәтті инициализацияланды');
   } catch (err) {
+    // Қате болса барлық өзгерістерді қайтару
     await client.query('ROLLBACK');
-    console.error('❌ Error initializing schema:', err);
+    console.error('Схема инициализациясында қате:', err);
     throw err;
   } finally {
     client.release();
   }
 }
 
-// Run if executed directly
+// Тікелей іске қосылса (node db/schema.js) — схеманы жасап шығу
 if (require.main === module) {
   initSchema()
     .then(() => process.exit(0))
