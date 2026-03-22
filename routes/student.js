@@ -29,6 +29,25 @@ router.get('/check-ins', async (req, res) => {
 router.post('/check-ins', async (req, res) => {
   try {
     const { mood, stress, sleep, energy, productivity, notes } = req.body;
+
+    // Validate values are in range 1–5
+    const fields = { mood, stress, sleep, energy, productivity };
+    for (const [key, val] of Object.entries(fields)) {
+      const n = Number(val);
+      if (!Number.isInteger(n) || n < 1 || n > 5) {
+        return res.status(400).json({ error: `Значение ${key} должно быть от 1 до 5` });
+      }
+    }
+
+    // Prevent duplicate check-in for today
+    const existing = await pool.query(
+      'SELECT id FROM check_ins WHERE student_id = $1 AND date = CURRENT_DATE',
+      [req.user.id]
+    );
+    if (existing.rows.length > 0) {
+      return res.status(409).json({ error: 'Вы уже заполнили чек-ин сегодня' });
+    }
+
     const result = await pool.query(
       `INSERT INTO check_ins (student_id, date, mood, stress, sleep, energy, productivity, notes)
        VALUES ($1, CURRENT_DATE, $2, $3, $4, $5, $6, $7)

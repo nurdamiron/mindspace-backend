@@ -10,6 +10,9 @@ const adminRoutes = require('./routes/admin');
 
 const app = express();
 
+// Trust the first proxy (Vercel / nginx) so rate limiter uses real client IP
+app.set('trust proxy', 1);
+
 const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: process.env.NODE_ENV === 'test' ? 10000 : 100,
